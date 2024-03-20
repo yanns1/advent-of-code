@@ -1,6 +1,4 @@
-use indicatif::ProgressBar;
 use lazy_static::lazy_static;
-use rayon::prelude::*;
 use regex::Regex;
 use std::{
     error::Error,
@@ -94,7 +92,78 @@ impl Maps {
             });
         }
 
+        // Sort the maps using the start of the qrc range
+        maps.seed_to_soil.sort_by_key(|range| range.src.start);
+        maps.soil_to_fertilizer.sort_by_key(|range| range.src.start);
+        maps.fertilizer_to_water
+            .sort_by_key(|range| range.src.start);
+        maps.water_to_light.sort_by_key(|range| range.src.start);
+        maps.light_to_temperature
+            .sort_by_key(|range| range.src.start);
+        maps.temperature_to_humidity
+            .sort_by_key(|range| range.src.start);
+        maps.humidity_to_location
+            .sort_by_key(|range| range.src.start);
+
+        maps.seed_to_soil = maps
+            .fill_map("seed", "soil")
+            .expect("Source or destination is invalid. Typo? Unexpected data?");
+        maps.soil_to_fertilizer = maps
+            .fill_map("soil", "fertilizer")
+            .expect("Source or destination is invalid. Typo? Unexpected data?");
+        maps.fertilizer_to_water = maps
+            .fill_map("fertilizer", "water")
+            .expect("Source or destination is invalid. Typo? Unexpected data?");
+        maps.water_to_light = maps
+            .fill_map("water", "light")
+            .expect("Source or destination is invalid. Typo? Unexpected data?");
+        maps.light_to_temperature = maps
+            .fill_map("light", "temperature")
+            .expect("Source or destination is invalid. Typo? Unexpected data?");
+        maps.temperature_to_humidity = maps
+            .fill_map("temperature", "humidity")
+            .expect("Source or destination is invalid. Typo? Unexpected data?");
+        maps.humidity_to_location = maps
+            .fill_map("humidity", "location")
+            .expect("Source or destination is invalid. Typo? Unexpected data?");
+
         Ok(maps)
+    }
+
+    fn fill_map(&self, src: &str, dest: &str) -> Option<Map> {
+        let map = self.get_map(src, dest)?;
+        let mut new_map: Vec<RangeProduct> = vec![];
+        let first_src_bound = map[0].src.start;
+        if first_src_bound != u64::MIN {
+            new_map.push(RangeProduct {
+                src: u64::MIN..first_src_bound,
+                dest: u64::MIN..first_src_bound,
+            });
+        }
+        for i in 0..(map.len() - 1) {
+            let rp = &map[i];
+            let next_rp = &map[i + 1];
+
+            new_map.push(rp.clone());
+
+            if next_rp.src.start != rp.src.end {
+                new_map.push(RangeProduct {
+                    src: rp.src.end..next_rp.src.start,
+                    dest: rp.src.end..next_rp.src.start,
+                });
+            }
+        }
+        let last_rp = &map[map.len() - 1];
+        new_map.push(last_rp.clone());
+        let last_src_bound = last_rp.src.end;
+        if last_src_bound != u64::MAX {
+            new_map.push(RangeProduct {
+                src: last_src_bound..u64::MAX,
+                dest: last_src_bound..u64::MAX,
+            });
+        }
+
+        Some(new_map)
     }
 
     fn get_map(&self, src: &str, dest: &str) -> Option<&Map> {
@@ -125,72 +194,91 @@ impl Maps {
         }
     }
 
-    fn get_dest_from_src(&self, src: &str, dest: &str, src_val: u64) -> Option<u64> {
+    /// Rather tedious and ugly, but it works.
+    fn src_range_to_dest_ranges(
+        &self,
+        src: &str,
+        dest: &str,
+        src_range: &Range<u64>,
+    ) -> Option<Vec<Range<u64>>> {
+        let mut dest_ranges: Vec<Range<u64>> = vec![];
         let map = self.get_map(src, dest)?;
-        let mut dest_val = src_val;
-        for range_prod in map {
-            if range_prod.src.binary_search(src_val) {
-                let offset = src_val - range_prod.src.start;
-                dest_val = range_prod.dest.start + offset;
+        let mut map_rp_it = map.iter();
+        let mut map_rp_opt = map_rp_it.next();
+
+        let mut dest_range_start: u64;
+        loop {
+            match map_rp_opt {
+                Some(rp) => {
+                    if rp.src.contains(&src_range.start) {
+                        let offset = src_range.start - rp.src.start;
+                        dest_range_start = rp.dest.start + offset;
+                        break;
+                    } else {
+                        map_rp_opt = map_rp_it.next();
+                    }
+                }
+                None => panic!("Should have found the start of `src_range` among map src ranges."),
             }
         }
 
-        Some(dest_val)
-    }
-
-    fn seed_to_loc(&self, seed: u64) -> u64 {
-        let soil = self
-            .get_dest_from_src("seed", "soil", seed)
-            .expect("Source or destination is invalid. Typo? Unexpected data?");
-        let fertilizer = self
-            .get_dest_from_src("soil", "fertilizer", soil)
-            .expect("Source or destination is invalid. Typo? Unexpected data?");
-        let water = self
-            .get_dest_from_src("fertilizer", "water", fertilizer)
-            .expect("Source or destination is invalid. Typo? Unexpected data?");
-        let light = self
-            .get_dest_from_src("water", "light", water)
-            .expect("Source or destination is invalid. Typo? Unexpected data?");
-        let temperature = self
-            .get_dest_from_src("light", "temperature", light)
-            .expect("Source or destination is invalid. Typo? Unexpected data?");
-        let humidity = self
-            .get_dest_from_src("temperature", "humidity", temperature)
-            .expect("Source or destination is invalid. Typo? Unexpected data?");
-        let location = self
-            .get_dest_from_src("humidity", "location", humidity)
-            .expect("Source or destination is invalid. Typo? Unexpected data?");
-
-        location
-    }
-}
-
-trait RangeExt<U64> {
-    fn binary_search(&self, n: u64) -> bool;
-}
-
-impl RangeExt<u64> for Range<u64> {
-    fn binary_search(&self, n: u64) -> bool {
-        let mut start = self.start;
-        let mut end = self.end - 1;
-        let mut mid: u64;
-        while start <= end {
-            mid = (start + end) / 2;
-
-            match n.cmp(&mid) {
-                std::cmp::Ordering::Equal => {
-                    return true;
+        loop {
+            match map_rp_opt {
+                Some(rp) => {
+                    if rp.src.contains(&src_range.end) {
+                        let offset = src_range.end - rp.src.start;
+                        dest_ranges.push(dest_range_start..rp.dest.start + offset);
+                        break;
+                    } else {
+                        dest_ranges.push(dest_range_start..rp.dest.end);
+                        map_rp_opt = map_rp_it.next();
+                        if let Some(rp) = map_rp_opt {
+                            dest_range_start = rp.dest.start;
+                        }
+                    }
                 }
-                std::cmp::Ordering::Less => {
-                    end = mid - 1;
-                }
-                std::cmp::Ordering::Greater => {
-                    start = mid + 1;
-                }
+                None => panic!("Should have found the end of `src_range` among map src ranges."),
             }
         }
 
-        false
+        Some(dest_ranges)
+    }
+
+    fn seed_to_loc_ranges(&self, seed_ranges: &mut [Range<u64>]) -> Vec<Range<u64>> {
+        seed_ranges.sort_by_key(|range| range.start);
+        let loc_ranges: Vec<Range<u64>> = seed_ranges
+            .iter()
+            .flat_map(|seed_range| {
+                self.src_range_to_dest_ranges("seed", "soil", seed_range)
+                    .expect("Source or destination is invalid. Typo? Unexpected data?")
+            })
+            .flat_map(|ref soil_range| {
+                self.src_range_to_dest_ranges("soil", "fertilizer", soil_range)
+                    .expect("Source or destination is invalid. Typo? Unexpected data?")
+            })
+            .flat_map(|ref fertilizer_range| {
+                self.src_range_to_dest_ranges("fertilizer", "water", fertilizer_range)
+                    .expect("Source or destination is invalid. Typo? Unexpected data?")
+            })
+            .flat_map(|ref water_range| {
+                self.src_range_to_dest_ranges("water", "light", water_range)
+                    .expect("Source or destination is invalid. Typo? Unexpected data?")
+            })
+            .flat_map(|ref light_range| {
+                self.src_range_to_dest_ranges("light", "temperature", light_range)
+                    .expect("Source or destination is invalid. Typo? Unexpected data?")
+            })
+            .flat_map(|ref temperature_range| {
+                self.src_range_to_dest_ranges("temperature", "humidity", temperature_range)
+                    .expect("Source or destination is invalid. Typo? Unexpected data?")
+            })
+            .flat_map(|ref humidity_range| {
+                self.src_range_to_dest_ranges("humidity", "location", humidity_range)
+                    .expect("Source or destination is invalid. Typo? Unexpected data?")
+            })
+            .collect();
+
+        loc_ranges
     }
 }
 
@@ -224,43 +312,16 @@ fn main() -> io::Result<()> {
     let maps = Maps::new(lines).unwrap();
 
     // Find to locations corresponding to seeds
-    let n_seeds: u64 = seed_ranges
-        .par_iter()
-        .fold(|| 0, |acc, range| acc + (range.end - range.start))
-        .sum();
-    let pbar = ProgressBar::new(n_seeds);
-    let locations: Vec<u64> = seed_ranges
-        .into_par_iter()
-        .flatten()
-        .map(|seed| {
-            let res = maps.seed_to_loc(seed);
-            pbar.inc(1);
-            res
-        })
-        .collect();
-    pbar.finish();
+    let mut loc_ranges = maps.seed_to_loc_ranges(&mut seed_ranges);
 
     // Find the lowest location
-    let res = *locations
-        .iter()
-        .min()
-        .expect("Expected `locations` to not be empty.");
+    assert!(
+        !loc_ranges.is_empty(),
+        "Expected to have at least one location range."
+    );
+    loc_ranges.sort_by_key(|range| range.start);
+    let res = loc_ranges[0].start;
 
     println!("{}", res);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_binary_search() {
-        let range: Range<u64> = Range { start: 0, end: 10 };
-
-        for n in 0..10 {
-            assert!(range.binary_search(n));
-        }
-        assert!(!range.binary_search(11));
-    }
 }
