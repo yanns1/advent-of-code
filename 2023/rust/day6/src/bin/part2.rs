@@ -3,7 +3,6 @@ use regex::Regex;
 use std::{
     fs::File,
     io::{self, BufRead, BufReader},
-    iter::zip,
 };
 
 lazy_static! {
@@ -12,9 +11,9 @@ lazy_static! {
     static ref NUM_RE: Regex = Regex::new(r"(?<n>\d+)").unwrap();
 }
 
-type Time = u32;
-type Distance = u32;
-type Speed = u32;
+type Time = u64;
+type Distance = u64;
+type Speed = u64;
 
 #[derive(Debug)]
 struct Race {
@@ -55,50 +54,47 @@ fn main() -> io::Result<()> {
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
-    // Parse the races
+    // Parse the race
     let first_line = lines.next().unwrap().unwrap();
     let time_caps = TIME_RE.captures(&first_line).unwrap();
-    let times: Vec<u32> = NUM_RE
+    let mut time = String::new();
+    for (_, [time_str]) in NUM_RE
         .captures_iter(&time_caps["times"])
         .map(|c| c.extract())
-        .map(|(_, [n])| n.parse::<u32>().unwrap())
-        .collect();
+    {
+        time.push_str(time_str);
+    }
+    let time: u64 = time.parse().unwrap();
 
     let second_line = lines.next().unwrap().unwrap();
     let distance_caps = DISTANCE_RE.captures(&second_line).unwrap();
-    let distances: Vec<u32> = NUM_RE
+    let mut distance = String::new();
+    for (_, [distance_str]) in NUM_RE
         .captures_iter(&distance_caps["distances"])
         .map(|c| c.extract())
-        .map(|(_, [n])| n.parse::<u32>().unwrap())
-        .collect();
+    {
+        distance.push_str(distance_str);
+    }
+    let distance: u64 = distance.parse().unwrap();
 
-    assert_eq!(
-        times.len(),
-        distances.len(),
-        "Expected to have one time per distance, and vice versa."
-    );
-    let races: Vec<Race> = zip(&times, &distances)
-        .map(|(&t, &d)| Race::new(t, d))
-        .collect();
+    let race = Race::new(time, distance);
 
-    // Find all the ways to do better than the records
-    let mut n_ways_to_beat_record_per_race: Vec<u32> = vec![];
+    // Find the number of ways to do better than the records
     let boat = ToyBoat::new();
-    for race in races {
-        let mut n_ways: u32 = 0;
-        for hold in 1..race.time {
-            if boat.run_race(&race, hold) > race.record_distance {
-                n_ways += 1;
-            }
-        }
-        n_ways_to_beat_record_per_race.push(n_ways);
+    let mut n_ways_to_do_worse: u64 = 0;
+    let mut hold: u64 = 0;
+    while hold <= race.time && boat.run_race(&race, hold) <= race.record_distance {
+        n_ways_to_do_worse += 1;
+        hold += 1;
     }
 
-    // Aggregate to obtain the result
-    let res: u32 = n_ways_to_beat_record_per_race.iter().product();
+    let mut n_ways_to_do_better: u64 = race.time / 2;
+    if race.time % 2 == 1 {
+        n_ways_to_do_better += 1;
+    }
+    n_ways_to_do_better = (n_ways_to_do_better - n_ways_to_do_worse) * 2;
 
-    println!("{}", res);
+    println!("{}", n_ways_to_do_better);
 
     Ok(())
 }
-
